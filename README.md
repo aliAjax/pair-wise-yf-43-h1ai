@@ -26,6 +26,13 @@ python3 app.py --db ./data.db --port 8309
 
 - `instrument`：仪器状态；`calibration`：校准记录；`method`：方法版本；`result`：检测结果。
 
+## 换版复核
+
+- 方法版本`validate_method`通过后，同名旧版本自动退役（`retired`），接口`GET /api/methods/effective`和演示页只显示生效版本。
+- 引用旧版本的待放行结果进入复核状态（`review`），需`assign_method`引用生效版本回到`pending`后才能`release`；`revoke_method`同样触发复核。
+- 已放行结果（`released`）为终态，数据里固定保留当时的仪器（名称、编号）、方法（名称、版本）、数值、单位和放行人，后续换版不影响。
+- 仪器校准过期或处于隔离状态时，放行被拒绝，并写入`release_failed`失败审计（含拒绝原因）。
+
 ## 主要接口
 
 - `GET /health`：健康检查。
@@ -33,6 +40,7 @@ python3 app.py --db ./data.db --port 8309
 - `POST /api/<kind>`：创建对象；请求体为JSON。
 - `GET /api/entities/<id>`：读取对象当前版本。
 - `POST /api/entities/<id>/actions`：提交`{"action":"动作名","data":{...},"expected_version":数字}`。
+- `GET /api/methods/effective`：列出生效（已验证）的方法版本，可用`?name=`过滤。
 - `GET /api/audit`：读取审计记录。
 
 请求身份通过`X-User-Id`和`X-Role`请求头传入。创建和动作的可执行角色由规则引擎控制。

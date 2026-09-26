@@ -1,7 +1,7 @@
 from uuid import uuid4
 
 from .audit import AuditTrail
-from .domain import ConflictError, NotFoundError
+from .domain import ConflictError, DomainError, NotFoundError
 from .rules import RuleEngine
 
 
@@ -42,9 +42,21 @@ class DomainService:
         if not entity:
             raise NotFoundError("entity not found: " + entity_id)
         expected = int(expected_version) if expected_version is not None else entity["version"]
-        next_status, patch = self.rules.validate_transition(
-            actor, entity, action, dict(data or {}), self._lookup
-        )
+        try:
+            next_status, patch = self.rules.validate_transition(
+                actor, entity, action, dict(data or {}), self._lookup
+            )
+        except DomainError as exc:
+            if entity["kind"] == "result" and action == "release":
+                self.audit.record(
+                    entity_id,
+                    actor,
+                    "release_failed",
+                    entity["status"],
+                    entity["status"],
+                    {"outcome": "failed", "reason": str(exc)},
+                )
+            raise
         merged = dict(entity["data"])
         merged.update(patch)
         updated = self.repository.update_entity(entity_id, expected, next_status, merged)
@@ -56,7 +68,63 @@ class DomainService:
             updated["status"],
             {"patch": patch},
         )
+        if entity["kind"] == "method" and action == "validate_method":
+            self._retire_superseded_methods(actor, updated)
+        elif entity["kind"] == "method" and action == "revoke_method":
+            self._flag_results_for_review(actor, updated, "method revoked")
         return updated
+
+    def _retire_superseded_methods(self, actor, method):
+        """A newly validated version retires same-name predecessors and sends
+        their pending results into review."""
+        name = method["data"].get("name")
+        if not name:
+            return
+        for other in self._lookup("method", "name", name):
+            if other["id"] == method["id"] or other["status"] != "validated":
+                continue
+            retired_data = dict(other["data"])
+            retired_data["superseded_by"] = method["id"]
+            retired = self.repository.update_entity(
+                other["id"], other["version"], "retired", retired_data
+            )
+            self.audit.record(
+                other["id"],
+                actor,
+                "auto_retire",
+                "validated",
+                "retired",
+                {
+                    "name": name,
+                    "superseded_by": method["id"],
+                    "method_version": method["data"].get("version"),
+                },
+            )
+            self._flag_results_for_review(actor, retired, "method version retired")
+
+    def _flag_results_for_review(self, actor, method, reason):
+        for result in self._lookup("result", "method_id", method["id"]):
+            if result["status"] != "pending":
+                continue
+            review_data = dict(result["data"])
+            review_data["review_reason"] = reason
+            self.repository.update_entity(
+                result["id"], result["version"], "review", review_data
+            )
+            self.audit.record(
+                result["id"],
+                actor,
+                "enter_review",
+                "pending",
+                "review",
+                {"method_id": method["id"], "reason": reason},
+            )
+
+    def effective_methods(self, name=None):
+        methods = self.repository.list_entities(kind="method", status="validated")
+        if name:
+            methods = [m for m in methods if m["data"].get("name") == name]
+        return methods
 
     def get(self, entity_id):
         entity = self.repository.get_entity(entity_id)

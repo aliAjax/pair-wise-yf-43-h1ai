@@ -6,28 +6,128 @@
   <title>实验室仪器校准与方法验证</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #1f2937; }
-    main { max-width: 820px; margin: auto; }
-    pre { background: #f3f4f6; padding: 1rem; border-radius: 8px; overflow-x: auto; }
-    button { padding: .5rem .8rem; cursor: pointer; }
+    main { max-width: 880px; margin: auto; }
+    pre { background: #f3f4f6; padding: 1rem; border-radius: 8px; overflow-x: auto; font-size: 13px; }
+    button { padding: .5rem .8rem; cursor: pointer; margin-right: .5rem; }
+    table { border-collapse: collapse; width: 100%; margin: .5rem 0 1rem; }
+    th, td { border: 1px solid #d1d5db; padding: .35rem .6rem; text-align: left; font-size: 14px; }
+    th { background: #f9fafb; }
+    h2 { margin-top: 2rem; }
   </style>
 </head>
 <body>
 <main>
   <h1>实验室仪器校准与方法验证</h1>
-  <p>这是最小演示页面。使用浏览器或 curl 调用 JSON API。</p>
-  <p><button onclick="checkHealth()">检查服务状态</button></p>
+  <p>演示页面。换版复核规则：新方法版本验证通过后，同名旧版本自动退役；引用旧版本的待放行结果进入复核状态，重新引用生效版本后才能放行；已放行结果永久保留当时的仪器、方法、数值和放行人；仪器校准过期或隔离时放行被拒绝并记录失败审计。</p>
+  <p>
+    <button onclick="checkHealth()">检查服务状态</button>
+    <button onclick="loadEffective()">刷新生效方法版本</button>
+    <button onclick="runDemo()">运行换版复核演示</button>
+  </p>
+  <h2>生效方法版本（GET /api/methods/effective）</h2>
+  <div id="effective">尚未加载</div>
+  <h2>演示输出</h2>
   <pre id="result">等待操作</pre>
   <h2>常用接口</h2>
   <pre>GET  /health
 GET  /api/&lt;kind&gt;
 POST /api/&lt;kind&gt;
 GET  /api/entities/&lt;id&gt;
-POST /api/entities/&lt;id&gt;/actions</pre>
+POST /api/entities/&lt;id&gt;/actions
+GET  /api/methods/effective
+GET  /api/audit</pre>
 </main>
 <script>
+const ROLES = {
+  admin: {'X-User-Id': 'demo-admin', 'X-Role': 'admin'},
+  analyst: {'X-User-Id': 'demo-analyst', 'X-Role': 'analyst'},
+  authorizer: {'X-User-Id': 'demo-authorizer', 'X-Role': 'authorizer'},
+  metrology: {'X-User-Id': 'demo-metrology', 'X-Role': 'metrology'},
+};
+
+async function call(method, path, role, body) {
+  const options = {method, headers: Object.assign({}, ROLES[role] || {})};
+  if (body !== undefined) {
+    options.headers['Content-Type'] = 'application/json';
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(path, options);
+  return {status: response.status, body: await response.json()};
+}
+
+function show(text) {
+  document.getElementById('result').textContent = text;
+}
+
 async function checkHealth() {
   const response = await fetch('/health');
-  document.getElementById('result').textContent = JSON.stringify(await response.json(), null, 2);
+  show(JSON.stringify(await response.json(), null, 2));
+}
+
+async function loadEffective() {
+  const {body} = await call('GET', '/api/methods/effective');
+  const rows = body.items.map(m =>
+    `<tr><td>${m.data.name}</td><td>${m.data.version}</td><td>${m.status}</td><td>${m.id}</td></tr>`
+  ).join('');
+  document.getElementById('effective').innerHTML = body.items.length
+    ? `<table><tr><th>方法名称</th><th>生效版本</th><th>状态</th><th>ID</th></tr>${rows}</table>`
+    : '<p>当前没有生效的方法版本。</p>';
+}
+
+async function runDemo() {
+  const log = [];
+  const say = (line) => { log.push(line); show(log.join('\n')); };
+  try {
+    say('1. 创建仪器并校准（有效期至 2099-01-01）');
+    let r = await call('POST', '/api/instruments', 'admin', {name: 'Demo-Analyzer', serial: 'D-' + Date.now()});
+    const inst = r.body.id;
+    await call('POST', `/api/entities/${inst}/actions`, 'admin', {action: 'send_calibration', data: {}});
+    await call('POST', `/api/entities/${inst}/actions`, 'metrology', {action: 'calibrate', data: {due_at: '2099-01-01', passed: true}});
+
+    say('2. 创建方法 Demo-Assay v1 并验证通过');
+    r = await call('POST', '/api/methods', 'authorizer', {name: 'Demo-Assay', version: 'v1'});
+    const m1 = r.body.id;
+    await call('POST', `/api/entities/${m1}/actions`, 'authorizer', {action: 'validate_method', data: {parameters: {range: [0, 10]}, instrument_ids: [inst]}});
+
+    say('3. 创建待放行结果，引用 v1');
+    r = await call('POST', '/api/results', 'analyst', {sample_id: 'S-demo', measurement: 'demo', method_id: m1});
+    const res1 = r.body.id;
+
+    say('4. 同名 v2 验证通过 → v1 自动退役，待放行结果进入复核');
+    r = await call('POST', '/api/methods', 'authorizer', {name: 'Demo-Assay', version: 'v2'});
+    const m2 = r.body.id;
+    await call('POST', `/api/entities/${m2}/actions`, 'authorizer', {action: 'validate_method', data: {parameters: {range: [0, 20]}, instrument_ids: [inst]}});
+    r = await call('GET', `/api/entities/${m1}`);
+    say(`   旧版本 v1 状态: ${r.body.status}（superseded_by=${r.body.data.superseded_by}）`);
+    r = await call('GET', `/api/entities/${res1}`);
+    say(`   待放行结果状态: ${r.body.status}（${r.body.data.review_reason}）`);
+
+    say('5. 复核状态下直接放行被拒绝：');
+    r = await call('POST', `/api/entities/${res1}/actions`, 'analyst', {action: 'release', data: {instrument_id: inst, method_id: m2, value: 4.2, unit: 'mg/L'}});
+    say(`   HTTP ${r.status} ${r.body.error}`);
+
+    say('6. 引用生效版本 v2 后重新放行');
+    await call('POST', `/api/entities/${res1}/actions`, 'analyst', {action: 'assign_method', data: {method_id: m2}});
+    r = await call('POST', `/api/entities/${res1}/actions`, 'analyst', {action: 'release', data: {instrument_id: inst, method_id: m2, value: 4.2, unit: 'mg/L'}});
+    say(`   已放行，快照固定: 仪器=${r.body.data.instrument_name}(${r.body.data.instrument_serial}) 方法=${r.body.data.method_name} ${r.body.data.method_version} 值=${r.body.data.value}${r.body.data.unit} 放行人=${r.body.data.released_by}`);
+
+    say('7. 仪器隔离后放行被拒绝并记录失败审计');
+    r = await call('POST', '/api/results', 'analyst', {sample_id: 'S-demo-2', measurement: 'demo'});
+    const res2 = r.body.id;
+    await call('POST', `/api/entities/${inst}/actions`, 'metrology', {action: 'quarantine', data: {reason: 'demo 污染'}});
+    r = await call('POST', `/api/entities/${res2}/actions`, 'analyst', {action: 'release', data: {instrument_id: inst, method_id: m2, value: 1.0, unit: 'mg/L'}});
+    say(`   HTTP ${r.status} ${r.body.error}`);
+    await call('POST', `/api/entities/${inst}/actions`, 'metrology', {action: 'restore', data: {}});
+
+    r = await call('GET', '/api/audit');
+    const failed = r.body.items.filter(a => a.action === 'release_failed');
+    say(`   失败审计记录 ${failed.length} 条，最近一条: ${JSON.stringify(failed[failed.length - 1].detail)}`);
+
+    await loadEffective();
+    say('8. 生效版本列表已刷新（见上方表格，仅 v2 生效）');
+  } catch (err) {
+    say('演示出错: ' + err.message);
+  }
 }
 </script>
 </body>

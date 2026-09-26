@@ -85,6 +85,10 @@ def create_handler(service, rules, static_dir):
                         return self._send_html(200, handle.read())
                 if parts == ["api", "audit"]:
                     return self._send(200, {"items": service.audit_log()})
+                if parts == ["api", "methods", "effective"]:
+                    query = parse_qs(parsed.query)
+                    name = query.get("name", [None])[0]
+                    return self._send(200, {"items": service.effective_methods(name=name)})
                 if len(parts) == 3 and parts[:2] == ["api", "entities"]:
                     return self._send(200, service.get(parts[2]))
                 if len(parts) >= 2 and parts[0] == "api":
