@@ -34,6 +34,14 @@ python3 app.py --db ./data.db --port 8309
 - `GET /api/entities/<id>`：读取对象当前版本。
 - `POST /api/entities/<id>/actions`：提交`{"action":"动作名","data":{...},"expected_version":数字}`。
 - `GET /api/audit`：读取审计记录。
+- `GET /api/methods/effective`：按方法名返回当前生效（validated）的版本。
+
+## 换版复核
+
+- 新版本`validate_method`通过后，同名旧版本自动退役为`superseded`，并写入`auto_retire`审计；页面和`/api/methods/effective`只展示生效版本。
+- 已放行（`released`）结果固定保留放行时的仪器、方法、数值和放行人（`release_snapshot`），不随旧版本退役而改变。
+- 仍引用旧版本的待放行（`pending`）结果自动进入`review`复核状态；需由`analyst`/`admin`执行`reassign_method`引用生效的新版本回到`pending`后才能再次`release`。
+- 仪器校准过期或处于隔离（`quarantined`）等非`active`状态时，`release`被拒绝，并写入`release_rejected`失败审计。
 
 请求身份通过`X-User-Id`和`X-Role`请求头传入。创建和动作的可执行角色由规则引擎控制。
 

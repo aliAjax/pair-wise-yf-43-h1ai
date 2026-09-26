@@ -6,29 +6,94 @@
   <title>实验室仪器校准与方法验证</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #1f2937; }
-    main { max-width: 820px; margin: auto; }
+    main { max-width: 900px; margin: auto; }
     pre { background: #f3f4f6; padding: 1rem; border-radius: 8px; overflow-x: auto; }
     button { padding: .5rem .8rem; cursor: pointer; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
+    th, td { border: 1px solid #d1d5db; padding: .4rem .6rem; text-align: left; font-size: .9rem; }
+    th { background: #f3f4f6; }
+    .badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .75rem; background: #e5e7eb; }
+    .badge.effective { background: #d1fae5; color: #065f46; }
+    .badge.review { background: #fef3c7; color: #92400e; }
+    .badge.released { background: #dbeafe; color: #1e40af; }
+    .badge.retired { background: #fee2e2; color: #991b1b; }
   </style>
 </head>
 <body>
 <main>
   <h1>实验室仪器校准与方法验证</h1>
   <p>这是最小演示页面。使用浏览器或 curl 调用 JSON API。</p>
-  <p><button onclick="checkHealth()">检查服务状态</button></p>
+  <p>
+    <button onclick="checkHealth()">检查服务状态</button>
+    <button onclick="refreshAll()">刷新方法版本与结果</button>
+  </p>
   <pre id="result">等待操作</pre>
+
+  <h2>方法版本（生效版本高亮）</h2>
+  <table id="methods">
+    <thead><tr><th>名称</th><th>版本</th><th>状态</th><th>生效</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>检测结果</h2>
+  <table id="results">
+    <thead><tr><th>样品</th><th>状态</th><th>方法版本</th><th>数值</th><th>放行人</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
   <h2>常用接口</h2>
   <pre>GET  /health
 GET  /api/&lt;kind&gt;
 POST /api/&lt;kind&gt;
 GET  /api/entities/&lt;id&gt;
-POST /api/entities/&lt;id&gt;/actions</pre>
+POST /api/entities/&lt;id&gt;/actions
+GET  /api/methods/effective
+GET  /api/audit</pre>
 </main>
 <script>
+const METHOD_STATUS = { validated: '生效', draft: '草稿', superseded: '已退役', revoked: '已撤销' };
+const RESULT_STATUS = { pending: '待放行', review: '复核中', released: '已放行', blocked: '已冻结' };
+
 async function checkHealth() {
   const response = await fetch('/health');
   document.getElementById('result').textContent = JSON.stringify(await response.json(), null, 2);
 }
+
+function badge(text, cls) {
+  return '<span class="badge ' + cls + '">' + text + '</span>';
+}
+
+async function refreshAll() {
+  const [methodsRes, effectiveRes, resultsRes] = await Promise.all([
+    fetch('/api/methods'), fetch('/api/methods/effective'), fetch('/api/results')
+  ]);
+  const methods = (await methodsRes.json()).items || [];
+  const effective = new Set(((await effectiveRes.json()).items || []).map(m => m.id));
+  const results = (await resultsRes.json()).items || [];
+  const methodById = Object.fromEntries(methods.map(m => [m.id, m]));
+
+  document.querySelector('#methods tbody').innerHTML = methods.map(m => {
+    const isEffective = effective.has(m.id);
+    const cls = isEffective ? 'effective' : (m.status === 'validated' ? 'effective' : 'retired');
+    return '<tr><td>' + (m.data.name || '') + '</td><td>' + (m.data.version || '') + '</td>' +
+      '<td>' + badge(METHOD_STATUS[m.status] || m.status, m.status === 'validated' ? 'effective' : 'retired') + '</td>' +
+      '<td>' + (isEffective ? badge('当前生效', 'effective') : '') + '</td></tr>';
+  }).join('') || '<tr><td colspan="4">暂无方法</td></tr>';
+
+  document.querySelector('#results tbody').innerHTML = results.map(r => {
+    const method = methodById[r.data.method_id];
+    const methodLabel = method ? (method.data.name + ' ' + method.data.version) : (r.data.method_id || '-');
+    const snap = r.data.release_snapshot || {};
+    const cls = r.status === 'review' ? 'review' : (r.status === 'released' ? 'released' : '');
+    return '<tr><td>' + (r.data.sample_id || '') + '</td>' +
+      '<td>' + badge(RESULT_STATUS[r.status] || r.status, cls) + '</td>' +
+      '<td>' + methodLabel + '</td>' +
+      '<td>' + (snap.value !== undefined ? snap.value + ' ' + (snap.unit || '') : (r.data.value !== undefined ? r.data.value + ' ' + (r.data.unit || '') : '-')) + '</td>' +
+      '<td>' + (r.data.released_by || '-') + '</td></tr>';
+  }).join('') || '<tr><td colspan="5">暂无结果</td></tr>';
+}
+
+refreshAll().catch(() => {});
 </script>
 </body>
 </html>
